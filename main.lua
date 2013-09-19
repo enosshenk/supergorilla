@@ -14,24 +14,38 @@ timer = require "timer"
 -- Game state init
 local gTitle = {}
 local gMenu = {}
+local g1PMenu = {}
+local g2PMenu = {}
 local gRound = {}
 local gGameOver = {}
 
 -- Declare some variables
 cityGrid = {}				-- Describes the cityscape for drawing and collision
-gameMode = 0				-- Game mode. 0=startup, 1=angle input, 2=power input, 3=firing, 4=resolving, 5=game over
+gameMode = 0				-- In-round Game mode. -1=AI process, 0=startup, 1=angle input, 2=power input, 3=firing, 4=resolving, 5=game over
 turn = 1					-- Who's turn it is to shoot
-gameRounds = 3
-gameRoundsElapsed = 0
-roundEnding = false
+gameRounds = 3				-- Rounds to be played before the game ends
+gameRoundsElapsed = 0		-- Rounds played elapsed
+roundEnding = false			-- True if a round is finishing up, used for delaying the gamestate switch
 player1 = true				-- True if player1 is alive, false if his gorilla has been blown up
 player2 = true
-player1Name = ""
+player1Name = ""			-- Player names
 player2Name = ""
-player1Wins = 0
+player1Wins = 0				-- Elapsed rounds won per player
 player2Wins = 0
-wind = 0
-sunWasHit = false
+wind = 0					-- Wind to affect shots, randomly set per round
+sunWasHit = false			-- If true, sun displays o-face sprite
+
+-- AI vars
+AIDifficulty = "2"			-- Difficulty for AI. 1=easy 5=hard
+useAI = false				-- True if the round will use AI for player2
+AIThinkMin = 2				-- Min/max values for AI think time
+AIThinkMax = 6
+AIThinkElapsed = 0
+AILastAngle = 0				-- Last angle setting for AI shot
+AILastPower = 0				-- Last power settings for AI shot
+AIMinAngle = 0				-- Minimum angle to clear adjacent buildings
+AILastDistance = 0			-- Distance from impact to target on last AI shot
+AILastOverUnder = ""		-- "Over" if last shot overshot the target, "Under" if last shot landed short
 
 -- Player location variables
 player1Location = {}
@@ -52,9 +66,13 @@ player1AngleIn = ""		-- Strings for player input
 player1PowerIn = ""
 player2AngleIn = ""	
 player2PowerIn = ""
+mainMenuIn = ""
 inputCursor = ""		-- Flashy fake cursor
 cursorOn = false
 cursorTime = 0
+
+-- Random AI names
+AINames = { "Larry", "Curly", "Moe", "Levi", "Chloe", "Blastron", "xezton", "poemdexter", "InternetJanitor", "Forer", "Jon93", "jusion", "Supernorn", "Unormal", "Shalinor" }
 	
 -- Bannana vars
 bannana = {}
@@ -68,13 +86,13 @@ bannana.impactLocation.y = 0
 bannana.velocity.x = 0
 bannana.velocity.y = 0
 bannana.rotation = 0
-bannanaRotationRate = 10
+bannanaRotationRate = 10		-- How fast bannana rotates per second, in degrees
 playDown = true					-- To ensure falling sound only plays once per shot
 
 -- Temp explosion vars
-explosionRadius = 32
+explosionRadius = 32			-- Radius of circle drawn for bannana/building explosion
 explosionFade = 2
-gorillaExplosionRadius = 128
+gorillaExplosionRadius = 128	-- Radius of circle drawn for gorilla death explosion
 gorillaExplosionFade = 2
 
 -- Particle system vars
@@ -83,16 +101,16 @@ sparkSystems = {}
 debrisSystems = {}
 
 -- Clouds!
-clouds = {}
+clouds = {}						-- A table to hold cloud settings
 
--- Title screen timing
-titleFadeIn = 2.1
-titleFadeOut = 2.1
-titleFadeAlpha = 0
-titleIsFadeIn = true
+-- Title screen timing	
+titleFadeIn = 2.1				-- Alpha per second for initial titlescreen fade in
+titleFadeOut = 2.1				-- Alpha per second for fade out
+titleFadeAlpha = 0				-- Current alpha for title screen
+titleIsFadeIn = true			-- True if currently fading in
 titleIsShow = false
 titleIsFadeOut = false
-titleShowTime = 5
+titleShowTime = 5				-- Time titlescreen holds before going to fade out
 titleShowTimeElapsed = 0
 
 -- Menu screen vars
@@ -110,7 +128,9 @@ function love.load()
 	cloud1Image = love.graphics.newImage("/images/cloud1.tga")
 	cloud2Image = love.graphics.newImage("/images/cloud2.tga")
 	bannanaImage = love.graphics.newImage("/images/bannana.tga")
-	gorilla = love.graphics.newImage("/images/gorilla.tga")
+	gorillaIdle = love.graphics.newImage("/images/gorilla_idle.tga")
+	gorillaThrow = love.graphics.newImage("/images/gorilla_throw.tga")
+	gorillaAngry = love.graphics.newImage("/images/gorilla_angry.tga")
 	titleScreen = love.graphics.newImage("/images/titlescreen.png")
 	menuScreen = love.graphics.newImage("/images/menuscreen.png")
 	-- Building images
@@ -147,7 +167,7 @@ function love.load()
 	sConfirm = love.audio.newSource("/sounds/confirm.ogg")
 	
 	-- Load font
-	gorillaFont = love.graphics.newImageFont("/images/imagefont.png", " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-+/():;%&`'*#=[]\"")
+	gorillaFont = love.graphics.newImageFont("/images/imagefont.png", " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-+/():;%&`'*#=[]\"\\@>")
 	
 	-- Random the seed all up in this bitch
 	math.randomseed(os.time())
@@ -207,11 +227,11 @@ function gTitle:keypressed(key, code)
 end
 
 --
--- Menu gamestate
+-- Game mode menu gamestate
 --
 
 function gMenu:enter()
-	menuMode = 0
+	mainMenuIn = ""
 end
 
 function gMenu:update(dt)
@@ -231,9 +251,237 @@ function gMenu:update(dt)
 end
 
 function gMenu:keypressed(key, code)
+	-- Enter player amount
+	if key == "1" or key == "2" then
+		if string.len(mainMenuIn) < 1 then
+			-- Can fit more characters, append
+			if string.len(key) < 3 then
+				-- Play sound
+				love.audio.play(sKeypress)
+				mainMenuIn = mainMenuIn..key
+			end
+		end
+	elseif key == "return" then
+		-- Play sound
+		love.audio.play(sConfirm)
+		if mainMenuIn == "1" then
+			-- Lock in players, change game state
+			print("Player number locked in, moving to 1p menu gamestate")
+			useAI = true
+			gameState.switch(g1PMenu)
+		elseif mainMenuIn == "2" then
+			-- Lock in players, change game state
+			print("Player number locked in, moving to 2p menu gamestate")	
+			gameState.switch(g2PMenu)		
+		end
+	elseif key == "backspace" then
+		-- Delete last character
+		mainMenuIn = string.sub(mainMenuIn, 1, string.len(mainMenuIn) - 1)
+		-- Play sound
+		love.audio.play(sBackspace)			
+	end			
+end
+
+function gMenu:draw()
+	love.graphics.setColor(255, 255, 255, 255)
+	love.graphics.draw(menuScreen, 0, 0)
+	love.graphics.setFont(gorillaFont)
+
+	love.graphics.printf("Do you want to play a one or two player game?", 128, 250, 512, "left")
+	love.graphics.printf("Enter 1 or 2, or Escape to quit.", 128, 280, 512, "left")
+	love.graphics.printf("C:\\GORILLA\\> "..mainMenuIn..inputCursor, 128, 310, 512, "left")	
+end
+
+--
+--	1 Player Menu gamestate
+--
+
+function g1PMenu:enter()
+	menuMode = 0
+	AIDifficulty = "2"
+	gameRounds = "3"
+end
+
+function g1PMenu:update(dt)
+	-- Update fake cursor
+	cursorTime = cursorTime + dt
+	if cursorTime > 0.2 then
+		if cursorOn == true then
+			cursorOn = false
+			inputCursor = ""
+			cursorTime = 0
+		else
+			cursorOn = true
+			inputCursor = "."
+			cursorTime = 0
+		end
+	end
+end
+
+function g1PMenu:keypressed(key, code)
+	if menuMode == 3 then
+		-- Enter AI difficulty
+		if key == "1" or key == "2" or key == "3" or key == "4" or key == "5" then
+			if string.len(AIDifficulty) < 1 then
+				-- Can fit more characters, append
+				if string.len(key) < 3 then
+					-- Play sound
+					love.audio.play(sKeypress)
+					AIDifficulty = AIDifficulty..key
+				end
+			end
+		elseif key == "return" then
+			-- Lock in difficulty, change game state
+			print("Rounds locked in, moving to round gamestate")
+			-- Play sound
+			love.audio.play(sConfirm)	
+			AIDifficulty = tonumber(AIDifficulty)
+			gameState.switch(gRound)
+		elseif key == "backspace" then
+			-- Delete last character
+			AIDifficulty = string.sub(AIDifficulty, 1, string.len(AIDifficulty) - 1)
+			-- Play sound
+			love.audio.play(sBackspace)			
+		end			
+	end
 	if menuMode == 2 then
 		-- Enter round amount
+		if key == "1" or key == "2" or key == "3" or key == "4" or key == "5" or key == "6" or key == "7" or key == "8" or key == "9" or key == "0" then
+			if string.len(gameRounds) < 2 then
+				-- Can fit more characters, append
+				if string.len(key) < 3 then
+					-- Play sound
+					love.audio.play(sKeypress)
+					gameRounds = gameRounds..key
+				end
+			end
+		elseif key == "return" then
+			-- Lock in round amount, change game state
+			print("Rounds locked in, moving to AI difficulty")
+			gameRounds = tonumber(gameRounds)
+			-- Play sound
+			love.audio.play(sConfirm)	
+			menuMode = 3
+		elseif key == "backspace" then
+			-- Delete last character
+			gameRounds = string.sub(gameRounds, 1, string.len(gameRounds) - 1)
+			-- Play sound
+			love.audio.play(sBackspace)			
+		end			
+	end
+	if menuMode == 1 then
+		-- Enter player 2 name
 		if key ~= "return" and key ~= "backspace" then
+			if string.len(player2Name) < 20 then
+				-- Can fit more characters, append
+				if string.len(key) < 2 then
+					-- Play sound
+					love.audio.play(sKeypress)
+					player2Name = player2Name..key
+				end
+			end
+		elseif key == "return" then
+			-- Lock in name
+			print("Player 2 name locked in, moving to requesting rounds")
+			-- Play sound
+			love.audio.play(sConfirm)
+			if player2Name ~= "" then
+				player2Name = string.gsub(player2Name, "%a", string.upper, 1)
+			else
+				player2Name = "@"..AINames[math.random(#AINames)]
+			end
+			menuMode = 2
+		elseif key == "backspace" then
+			-- Delete last character
+			player2Name = string.sub(player2Name, 1, string.len(player2Name) - 1)	
+			-- Play sound
+			love.audio.play(sBackspace)
+		end	
+	end
+	if menuMode == 0 then
+		-- Enter player 1 name
+		if key ~= "return" and key ~= "backspace" then
+			if string.len(player1Name) < 20 then
+				-- Can fit more characters, append
+				if string.len(key) < 3 then
+					-- Play sound
+					love.audio.play(sKeypress)
+					player1Name = player1Name..key
+				end
+			end
+		elseif key == "return" then
+			-- Lock in name
+			print("Player 1 name locked in, moving to requesting player 2 name")
+			player1Name = string.gsub(player1Name, "%a", string.upper, 1)
+			menuMode = 1
+			-- Play sound
+			love.audio.play(sConfirm)	
+		elseif key == "backspace" then
+			-- Delete last character
+			player1Name = string.sub(player1Name, 1, string.len(player1Name) - 1)
+			-- Play sound
+			love.audio.play(sBackspace)			
+		end
+	end
+end
+
+function g1PMenu:draw()
+	love.graphics.setColor(255, 255, 255, 255)
+	love.graphics.draw(menuScreen, 0, 0)
+	love.graphics.setFont(gorillaFont)
+	
+	if menuMode == 0 then
+		love.graphics.printf("Enter Player 1 name.", 128, 250, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..player1Name..inputCursor, 128, 280, 512, "left")
+	elseif menuMode == 1 then
+		love.graphics.printf(player1Name, 128, 250, 512, "left")
+		love.graphics.printf("Vs.", 128, 280, 512, "left")
+		love.graphics.printf("Enter Player 2 name (Or leave blank for random.)", 128, 310, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..player2Name..inputCursor, 128, 340, 512, "left")
+	elseif menuMode == 2 then
+		love.graphics.printf(player1Name, 128, 250, 512, "left")
+		love.graphics.printf("Vs.", 128, 280, 512, "left")
+		love.graphics.printf(player2Name, 128, 310, 512, "left")	
+		love.graphics.printf("Play how many rounds?", 128, 340, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..gameRounds..inputCursor, 128, 370, 512, "left")
+	elseif menuMode == 3 then
+		love.graphics.printf(player1Name, 128, 250, 512, "left")
+		love.graphics.printf("Vs.", 128, 280, 512, "left")
+		love.graphics.printf(player2Name, 128, 310, 512, "left")	
+		love.graphics.printf("Rounds: "..gameRounds, 128, 340, 512, "left")
+		love.graphics.printf("Enter AI difficulty (1 to 5)", 128, 370, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..AIDifficulty..inputCursor, 128, 400, 512, "left")	
+	end
+end
+
+--
+-- 2 Player Menu gamestate
+--
+
+function g2PMenu:enter()
+	menuMode = 0
+end
+
+function g2PMenu:update(dt)
+	-- Update fake cursor
+	cursorTime = cursorTime + dt
+	if cursorTime > 0.2 then
+		if cursorOn == true then
+			cursorOn = false
+			inputCursor = ""
+			cursorTime = 0
+		else
+			cursorOn = true
+			inputCursor = "."
+			cursorTime = 0
+		end
+	end
+end
+
+function g2PMenu:keypressed(key, code)
+	if menuMode == 2 then
+		-- Enter round amount
+		if key == "1" or key == "2" or key == "3" or key == "4" or key == "5" or key == "6" or key == "7" or key == "8" or key == "9" or key == "0" then
 			if string.len(gameRounds) < 2 then
 				-- Can fit more characters, append
 				if string.len(key) < 3 then
@@ -309,22 +557,25 @@ function gMenu:keypressed(key, code)
 	end
 end
 
-function gMenu:draw()
+function g2PMenu:draw()
 	love.graphics.setColor(255, 255, 255, 255)
 	love.graphics.draw(menuScreen, 0, 0)
 	love.graphics.setFont(gorillaFont)
 	
 	if menuMode == 0 then
-		love.graphics.printf("Enter Player 1 name: "..player1Name..inputCursor, 300, 250, 168, "left")
+		love.graphics.printf("Enter Player 1 name.", 128, 250, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..player1Name..inputCursor, 128, 280, 512, "left")
 	elseif menuMode == 1 then
-		love.graphics.printf(player1Name, 300, 250, 168, "left")
-		love.graphics.printf("Vs.", 300, 280, 168, "left")
-		love.graphics.printf("Enter Player 2 name: "..player2Name..inputCursor, 300, 310, 168, "left")
+		love.graphics.printf(player1Name, 128, 250, 512, "left")
+		love.graphics.printf("Vs.", 128, 280, 512, "left")
+		love.graphics.printf("Enter Player 2 name.", 128, 310, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..player2Name..inputCursor, 128, 340, 512, "left")
 	elseif menuMode == 2 then
-		love.graphics.printf(player1Name, 300, 250, 168, "left")
-		love.graphics.printf("Vs.", 300, 280, 168, "left")
-		love.graphics.printf(player2Name, 300, 310, 168, "left")	
-		love.graphics.printf("Play how many rounds? "..gameRounds..inputCursor, 300, 375, 168, "left")
+		love.graphics.printf(player1Name, 128, 250, 512, "left")
+		love.graphics.printf("Vs.", 128, 280, 512, "left")
+		love.graphics.printf(player2Name, 128, 310, 512, "left")	
+		love.graphics.printf("Play how many rounds?", 128, 340, 512, "left")
+		love.graphics.printf("C:\\GORILLA\\> "..gameRounds..inputCursor, 128, 370, 512, "left")
 	end
 end
 
@@ -378,12 +629,14 @@ end
 
 function newGame()
 	-- Make sure game vars are reset
+	turn = 1
 	player1 = true
 	player2 = true
 	player1AngleIn = ""
 	player2AngleIn = ""
 	player1PowerIn = ""
 	player2PowerIn = ""
+	resetAI()
 	
 	-- Pick a background
 	if math.random(4) > 2 then
@@ -393,7 +646,7 @@ function newGame()
 	end
 	
 	-- Generate initial cloud settings
-	for i=1, 3 do
+	for i=1, 4 do
 		clouds[i] = {}
 		if math.random(4) > 2 then
 			clouds[i]["tile"] = cloud1Image
@@ -409,6 +662,11 @@ function newGame()
 		cityGrid[x] = {}
 		-- Generate a column height and save it in the X column
 		cityGrid[x]["height"] = 2 + math.random(6)
+		-- Generate a randomized color tint for this column
+		cityGrid[x]["color"] = {}
+		cityGrid[x]["color"]["r"] = math.random(150, 255)
+		cityGrid[x]["color"]["g"] = math.random(150, 255)
+		cityGrid[x]["color"]["b"] = math.random(150, 255)
 		for y=1, 8 do		
 			cityGrid[x][y] = {}
 			if y < cityGrid[x]["height"] then
@@ -515,8 +773,15 @@ function gRound:update(dt)
 			love.audio.stop(sBannanaUp)
 			love.audio.stop(sBannanaDown)
 			playDown = true
+			-- Evaluate shot for AI
+			if bannana.location.x > 768 then
+				AIEvaluateShot(bannana.location.x, bannana.location.y, false, true)
+			elseif bannana.location.x < 1 then
+				AIEvaluateShot(bannana.location.x, bannana.location.y, true, false)
+			end
 			-- End turn
-			gameMode = 1
+			gameMode = 4
+			timer.add(1, function() gameMode = 1 end)
 			swapTurn()
 		end
 		-- Check if we hit the sun
@@ -548,6 +813,8 @@ function gRound:update(dt)
 		if checkCollision(bannana.location.x, bannana.location.y) == true then
 			bannana.impactLocation.x = bannana.location.x
 			bannana.impactLocation.y = bannana.location.y
+			-- Evaluate shot for AI
+			AIEvaluateShot(bannana.location.x, bannana.location.y)
 			-- Spawn explosion PS
 			newExplosion(bannana.location.x, bannana.location.y)
 			-- Spawn debris PS
@@ -933,6 +1200,10 @@ function swapTurn()
 		turn = 2
 		player2AngleIn = ""
 		player2PowerIn = ""
+		if useAI == true then
+			gameMode = -1
+			AIDoTurn()
+		end
 	else
 		turn = 1
 		player1AngleIn = ""
@@ -956,10 +1227,131 @@ function cloudOffscreen(i)
 		else
 			clouds[i]["tile"] = cloud2Image
 		end
-		clouds[i]["x"] = 256
+		clouds[i]["x"] = 1024
 		clouds[i]["y"] = math.random(-32, 192)	
 	end
 end
+
+--
+-- AI Functions
+--
+
+function AIDoTurn()
+	-- Main AI start point
+	local tryAngle = 0
+	local tryPower = 0
+	
+	if AILastAngle == 0 and AILastPower == 0 then
+		-- First shot of the round for AI
+		local SourceHeight = cityGrid[11]["height"]
+		local AdjHeight = cityGrid[10]["height"]
+		local Adj2Height = cityGrid[9]["height"]
+		
+		-- Look at adjacent building height
+		if SourceHeight - AdjHeight == 1 then
+			-- Adjacent column is 1 higher than source
+			tryAngle = math.random(30, 40)
+			AIMinAngle = 32
+			tryPower = math.random(30, 50)
+		elseif SourceHeight - AdjHeight == 2 then
+			-- Adjacent column is 2 higher than source
+			tryAngle = math.random(65, 75)		
+			AIMinAngle = 65
+			tryPower = math.random(50, 60)
+		elseif SourceHeight - AdjHeight >= 3 then
+			-- Adjacent column is 3 higher than source
+			tryAngle = math.random(80, 85)
+			AIMinAngle = 80
+			tryPower = math.random(50, 70)
+		elseif SourceHeight - AdjHeight < 1 then
+			-- Adjacent column is same height or less, don't worry about it.
+			tryAngle = math.random(20, 50)
+			AIMinAngle = 30
+			tryPower = math.random(30, 45)
+		end	
+
+		-- Look at next to adjacent building height and adjust tryAngle
+		if SourceHeight - Adj2Height == 1 then
+			tryAngle = math.random(35, 45)
+			AIMinAngle = 40
+		elseif SourceHeight - Adj2Height == 2 then
+			tryAngle = math.random(65, 75)	
+			AIMinAngle = 70
+		elseif SourceHeight - Adj2Height >= 3 then
+			tryAngle = math.random(75, 85)
+			AIMinAngle = 85
+		elseif SourceHeight - Adj2Height < 1 then
+			tryAngle = math.random(20, 50)
+			AIMinAngle = 30
+		end	
+	else
+		if AILastOverUnder == "Over" then
+			tryPower = AILastPower - (AILastDistance / 15)
+			tryAngle = AILastAngle + math.random(3, 5)
+			if tryPower < 0 then
+				tryPower = 40
+				tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+			end
+		elseif AILastOverUnder == "Under" then
+			tryPower = AILastPower + (AILastDistance / 15)
+			tryAngle = AILastAngle + math.random(-5, 15)
+			if tryPower > 80 then
+				tryPower = 50
+				tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+			end
+		elseif AILastOverUnder == "OverOS" then
+			tryPower = AILastPower - math.random(20, 30)
+			tryAngle = AILastAngle + math.random(5, 15)
+			if tryPower < 0 then
+				tryPower = 50
+				tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+			end
+		elseif AILastOverUnder == "UnderOS" then
+			tryPower = AILastPower + (AILastDistance / 10)
+		end
+		if tryAngle > 90 then
+			tryAngle = math.random(85,88)
+		end
+	end
+	
+	player2AngleIn = tryAngle
+	player2PowerIn = tryPower
+	
+	fireBannana(player2FireLocation.x, player2FireLocation.y, tryAngle, tryPower)
+	AILastAngle = tryAngle
+	AILastPower = tryPower
+end
+
+function AIEvaluateShot(impactX, impactY, offscreenLeft, offscreenRight)
+	AILastDistance = math.sqrt(math.pow(impactX, 2) + math.pow(impactY, 2))
+	
+	if impactX < player1FireLocation.x then
+		if offscreenLeft == true then
+			AILastOverUnder = "OverOS"
+		else
+			AILastOverUnder = "Over"
+		end
+	elseif impactX > player1FireLocation.x then
+		if offscreenRight == true then
+			AILastOverUnder = "UnderOS"
+		else
+			AILastOverUnder = "Under"
+		end
+	end
+end
+
+function resetAI()
+	AIThinkElapsed = 0
+	AILastAngle = 0	
+	AILastPower = 0
+	AIMinAngle = 0
+	AILastDistance = 0
+	AILastOverUnder = ""
+end
+
+--
+-- Round Draw
+--
 
 function gRound:draw()
 	-- Draw the sky
@@ -980,19 +1372,49 @@ function gRound:draw()
 	for x=1, 12 do
 		for y=1, 8 do
 			if cityGrid[x][y]["type"] ~= 0 then
+				love.graphics.setColorMode("modulate")
+				love.graphics.setColor(cityGrid[x]["color"]["r"], cityGrid[x]["color"]["g"], cityGrid[x]["color"]["b"], 255)
 				love.graphics.draw(cityGrid[x][y]["tile"], (x - 1) * 64, (y - 1) * 64)
 			end
 		end
 	end
 	
+	-- Reset color mode
+	love.graphics.setColorMode("replace")
+	love.graphics.setColor(255, 255, 255, 255)
+	
 	-- Draw the gorillas
 	if player1 == true then
 		-- Player is alive, draw his gorilla
-		love.graphics.draw(gorilla, player1Location.x, player1Location.y)
+		if gameMode == 1 or gameMode == 2 then
+			love.graphics.draw(gorillaIdle, player1Location.x, player1Location.y)
+		elseif gameMode == 3 and turn == 1 then
+			love.graphics.draw(gorillaThrow, player1Location.x, player1Location.y)
+		elseif gameMode == 4 then
+			if player2 == true and turn == 2 then
+				love.graphics.draw(gorillaAngry, player1Location.x, player1Location.y)
+			else
+				love.graphics.draw(gorillaIdle, player1Location.x, player1Location.y)
+			end
+		else
+			love.graphics.draw(gorillaIdle, player1Location.x, player1Location.y)
+		end
 	end
 	if player2 == true then
 		-- Player is alive, draw his gorilla
-		love.graphics.draw(gorilla, player2Location.x, player2Location.y)
+		if gameMode == 1 or gameMode == 2 then
+			love.graphics.draw(gorillaIdle, player2Location.x, player2Location.y)
+		elseif gameMode == 3 and turn == 2 then
+			love.graphics.draw(gorillaThrow, player2Location.x, player2Location.y, 0, -1, 1, 64)
+		elseif gameMode == 4 then
+			if player1 == true and turn == 1 then
+				love.graphics.draw(gorillaAngry, player2Location.x, player2Location.y)
+			else
+				love.graphics.draw(gorillaIdle, player2Location.x, player2Location.y)
+			end
+		else
+			love.graphics.draw(gorillaIdle, player2Location.x, player2Location.y)
+		end
 	end
 	
 	-- Draw the bannana
@@ -1009,7 +1431,7 @@ function gRound:draw()
 			love.graphics.circle("fill", bannana.impactLocation.x, bannana.impactLocation.y, explosionRadius, 16)
 			explosionRadius = explosionRadius - explosionFade
 		else
-			gameMode = 1
+			timer.add(1, function() gameMode = 1 end)
 		end
 	elseif gameMode == 4 and (player1 == false or player2 == false) then
 		-- Draw gorilla explosion
