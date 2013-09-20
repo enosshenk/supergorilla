@@ -10,6 +10,7 @@
 -- Libraries
 gameState = require "gamestate"
 timer = require "timer"
+SGParticles = require "SGParticles"
 
 -- Game state init
 local gTitle = {}
@@ -43,6 +44,7 @@ AIThinkMax = 6
 AIThinkElapsed = 0
 AILastAngle = 0				-- Last angle setting for AI shot
 AILastPower = 0				-- Last power settings for AI shot
+AILastMoron = false			-- True when our last shot hit building adjacent to us
 AIMinAngle = 0				-- Minimum angle to clear adjacent buildings
 AILastDistance = 0			-- Distance from impact to target on last AI shot
 AILastOverUnder = ""		-- "Over" if last shot overshot the target, "Under" if last shot landed short
@@ -95,11 +97,6 @@ explosionFade = 2
 gorillaExplosionRadius = 128	-- Radius of circle drawn for gorilla death explosion
 gorillaExplosionFade = 2
 
--- Particle system vars
-fireSystems = {}
-sparkSystems = {}
-debrisSystems = {}
-
 -- Clouds!
 clouds = {}						-- A table to hold cloud settings
 
@@ -131,8 +128,10 @@ function love.load()
 	gorillaIdle = love.graphics.newImage("/images/gorilla_idle.tga")
 	gorillaThrow = love.graphics.newImage("/images/gorilla_throw.tga")
 	gorillaAngry = love.graphics.newImage("/images/gorilla_angry.tga")
+	gorillaDead = love.graphics.newImage("/images/gorilla_dead.tga")
 	titleScreen = love.graphics.newImage("/images/titlescreen.png")
 	menuScreen = love.graphics.newImage("/images/menuscreen.png")
+	
 	-- Building images
 	buildingMid = love.graphics.newImage("/images/building_mid.tga")
 	buildingMidD1 = love.graphics.newImage("/images/building_mid_dam1.tga")
@@ -146,10 +145,7 @@ function love.load()
 	buildingTop3D1 = love.graphics.newImage("/images/building_top3_dam1.tga")
 	buildingTopD2 = love.graphics.newImage("/images/building_top_dam2.tga")
 	buildingTopD3 = love.graphics.newImage("/images/building_top_dam3.tga")
-	-- Particle images
-	fire = love.graphics.newImage("/images/fire.tga")
-	spark = love.graphics.newImage("/images/particle.tga")
-	debris = love.graphics.newImage("/images/fragment.tga")
+
 	-- Sun images
 	sunStraight = love.graphics.newImage("/images/sun_straight.tga")
 	sunLeft = love.graphics.newImage("/images/sun_left.tga")
@@ -721,7 +717,10 @@ function endGame(victor)
 		-- Player 2 wins
 		player2Wins = player2Wins + 1
 	end
+	-- Increment rounds counter
 	gameRoundsElapsed = gameRoundsElapsed + 1
+	-- Clear particle tables
+	SGParticles.clearParticles()
 	if gameRoundsElapsed > gameRounds then
 		-- Game is over, go to victory screen
 		gameState.switch(gGameOver)
@@ -774,14 +773,15 @@ function gRound:update(dt)
 			love.audio.stop(sBannanaDown)
 			playDown = true
 			-- Evaluate shot for AI
-			if bannana.location.x > 768 then
-				AIEvaluateShot(bannana.location.x, bannana.location.y, false, true)
-			elseif bannana.location.x < 1 then
-				AIEvaluateShot(bannana.location.x, bannana.location.y, true, false)
+			if turn == 2 and useAI == true then
+				if bannana.location.x > 768 then
+					AIEvaluateShot(bannana.location.x, bannana.location.y, false, true)
+				elseif bannana.location.x < 1 then
+					AIEvaluateShot(bannana.location.x, bannana.location.y, true, false)
+				end
 			end
 			-- End turn
-			gameMode = 4
-			timer.add(1, function() gameMode = 1 end)
+			print("Bannana offscreen, ending turn")
 			swapTurn()
 		end
 		-- Check if we hit the sun
@@ -806,6 +806,7 @@ function gRound:update(dt)
 			love.audio.play(sGorillaExplode)
 			-- End round things
 			resetGorillaExplosion()
+			print("Gorilla hit, ending turn")
 			gameMode = 4
 			
 		end
@@ -814,11 +815,13 @@ function gRound:update(dt)
 			bannana.impactLocation.x = bannana.location.x
 			bannana.impactLocation.y = bannana.location.y
 			-- Evaluate shot for AI
-			AIEvaluateShot(bannana.location.x, bannana.location.y)
+			if turn == 2 and useAI == true then
+				AIEvaluateShot(bannana.location.x, bannana.location.y)
+			end
 			-- Spawn explosion PS
-			newExplosion(bannana.location.x, bannana.location.y)
+			SGParticles.newExplosion(bannana.location.x, bannana.location.y)
 			-- Spawn debris PS
-			newDebris(bannana.location.x + math.random(8), bannana.location.y + math.random(8))
+			SGParticles.newDebris(bannana.location.x + math.random(8), bannana.location.y + math.random(8))
 			-- Stop bannana flight sounds
 			love.audio.stop(sBannanaUp)
 			love.audio.stop(sBannanaDown)
@@ -826,7 +829,7 @@ function gRound:update(dt)
 			-- Play sound
 			love.audio.play(sBannanaExplode)
 			resetExplosion()
-			gameMode = 4
+			print("Building hit, ending turn")
 			swapTurn()
 			sunWasHit = false
 		end
@@ -835,11 +838,11 @@ function gRound:update(dt)
 	if gameMode == 5 and roundEnding == true then
 		if player1 == false and player2 == true then
 			-- Player 2 wins this round
-			timer.add(1, function() endGame(2) end)
+			timer.add(5, function() endGame(2) end)
 			roundEnding = false
 		elseif player2 == false and player1 == true then
 			-- Player 1 wins this round
-			timer.add(1, function() endGame(1) end)		
+			timer.add(5, function() endGame(1) end)		
 			roundEnding = false
 		end
 	end
@@ -862,36 +865,7 @@ function gRound:update(dt)
 	end
 	
 	-- Update extant particle systems in all game modes
-	for index, system in ipairs(fireSystems) do
-		if system:count() >= 8 then
-			stopExplosion(index)
-			system:start()
-			system:update(dt)
-		else
-			system:start()
-			system:update(dt)
-		end
-	end
-	for index, system in ipairs(sparkSystems) do
-		if system:count() >= 75 then
-			stopExplosion(index)
-			system:start()
-			system:update(dt)
-		else
-			system:start()
-			system:update(dt)
-		end
-	end
-	for index, system in ipairs(debrisSystems) do
-		if system:count() >= 15 then
-			stopDebris(index)
-			system:start()
-			system:update(dt)
-		else
-			system:start()
-			system:update(dt)
-		end
-	end
+	SGParticles.update(dt)
 	
 	-- Update cloud positions in all game modes
 	for i=1, 3 do
@@ -1127,87 +1101,24 @@ function resetGorillaExplosion()
 	gorillaExplosionRadius = 32
 end
 
-function stopExplosion(index)
-	fireSystems[index]:setEmissionRate(0)
-	sparkSystems[index]:setEmissionRate(0)
-end
-
-function stopDebris(index)
-	debrisSystems[index]:setEmissionRate(0)
-end
-
-function newExplosion(x, y)
-	-- Fire system
-	fSystem = love.graphics.newParticleSystem(fire, 50)
-	fSystem:setEmissionRate          (8)
-	fSystem:setLifetime              (1)
-	fSystem:setParticleLife          (0.5)
-	fSystem:setPosition              (x, y)
-	fSystem:setSpread                (math.rad(360))
-	fSystem:setSpeed                 (10, 30)
-	fSystem:setGravity               (-20)
-	fSystem:setRadialAcceleration    (100)
-	fSystem:setTangentialAcceleration(10)
-	fSystem:setSizes                  (0.5, 2, 1)
-	fSystem:setSizeVariation         (0.5)
-	fSystem:setSpin                  (-3, 3, 1)
-	fSystem:setSpinVariation         (0)
-	fSystem:setColors                 (255, 255, 255, 255, 255, 255, 255, 0)
-	-- Spark system
-	sSystem = love.graphics.newParticleSystem(spark, 150)
-	sSystem:setEmissionRate          (150)
-	sSystem:setLifetime              (1)
-	sSystem:setParticleLife          (1)
-	sSystem:setPosition              (x, y)
-	sSystem:setSpread                (math.rad(360))
-	sSystem:setSpeed                 (95, 150)
-	sSystem:setGravity               (80)
-	sSystem:setRadialAcceleration    (150)
-	sSystem:setTangentialAcceleration(10)
-	sSystem:setSizes                  (1)
-	sSystem:setSizeVariation         (2, 1, 0)
-	sSystem:setSpin                  (0)
-	sSystem:setSpinVariation         (0)
-	sSystem:setColors                 (255, 255, 255, 255, 255, 255, 255, 0)
-	
-	table.insert(fireSystems, fSystem)
-	table.insert(sparkSystems, sSystem)
-end
-
-function newDebris(x, y)
-	-- Debris system
-	dSystem = love.graphics.newParticleSystem(debris, 50)
-	dSystem:setEmissionRate          (25)
-	dSystem:setLifetime              (0.5)
-	dSystem:setParticleLife          (5)
-	dSystem:setPosition              (x, y)
-	dSystem:setSpread                (math.rad(360))
-	dSystem:setSpeed                 (10, 30)
-	dSystem:setGravity               (70)
-	dSystem:setRadialAcceleration    (10)
-	dSystem:setTangentialAcceleration(10)
-	dSystem:setSizes                  (2)
-	dSystem:setSizeVariation         (0)
-	dSystem:setSpin                  (-3, 3, 1)
-	dSystem:setSpinVariation         (0)
-	dSystem:setColors                 (255, 255, 255, 255)
-	
-	table.insert(debrisSystems, dSystem)
-end
-
 function swapTurn()
+	-- Handles swapping the current turn, as well as preparing the gamemode prior
+	-- Also calls the AI start function if an AI game
+	gameMode = 4
 	if turn == 1 then
 		turn = 2
 		player2AngleIn = ""
 		player2PowerIn = ""
 		if useAI == true then
-			gameMode = -1
-			AIDoTurn()
+			timer.add(3, function() AIDoTurn() end)
+		else
+			timer.add(1, function() gameMode = 1 end)
 		end
 	else
 		turn = 1
 		player1AngleIn = ""
 		player1PowerIn = ""
+		timer.add(1, function() gameMode = 1 end)
 	end
 end
 
@@ -1237,6 +1148,8 @@ end
 --
 
 function AIDoTurn()
+	gameMode = -1
+	
 	-- Main AI start point
 	local tryAngle = 0
 	local tryPower = 0
@@ -1285,37 +1198,51 @@ function AIDoTurn()
 			AIMinAngle = 30
 		end	
 	else
-		if AILastOverUnder == "Over" then
-			tryPower = AILastPower - (AILastDistance / 15)
-			tryAngle = AILastAngle + math.random(3, 5)
-			if tryPower < 0 then
-				tryPower = 40
-				tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+		if AILastDistance < 40 then
+			if AILastOverUnder == "Over" then
+				tryAngle = AILastAngle
+				tryPower = AILastPower + math.random(1,5)
+			elseif AILastOverUnder == "Under" then
+				tryAngle = AILastAngle
+				tryPower = AILastPower - math.random(1,5)
 			end
-		elseif AILastOverUnder == "Under" then
-			tryPower = AILastPower + (AILastDistance / 15)
-			tryAngle = AILastAngle + math.random(-5, 15)
-			if tryPower > 80 then
-				tryPower = 50
-				tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+		else
+			if AILastOverUnder == "Over" then
+				tryPower = AILastPower - (AILastDistance / 15)
+				tryAngle = AILastAngle
+				if tryPower < 0 then
+					tryPower = 40
+					tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+				end
+			elseif AILastOverUnder == "Under" then
+				tryPower = AILastPower + (AILastDistance / 15)
+				tryAngle = AILastAngle
+				if AILastMoron == true then
+					AILastMoron = false
+					AIMinAngle = AIMinAngle + 10
+				end
+				if tryPower > 80 then
+					tryPower = math.random(30, 50)
+					tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+				end
+			elseif AILastOverUnder == "OverOS" then
+				tryPower = AILastPower - math.random(10, 20)
+				tryAngle = AILastAngle + math.random(5, 15)
+				if tryPower < 10 then
+					tryPower = math.random(20, 30)
+					tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+				end
+			elseif AILastOverUnder == "UnderOS" then
+				tryPower = AILastPower + (AILastDistance / 10)
 			end
-		elseif AILastOverUnder == "OverOS" then
-			tryPower = AILastPower - math.random(20, 30)
-			tryAngle = AILastAngle + math.random(5, 15)
-			if tryPower < 0 then
-				tryPower = 50
-				tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
+			if tryAngle > 90 then
+				tryAngle = math.random(85,88)
 			end
-		elseif AILastOverUnder == "UnderOS" then
-			tryPower = AILastPower + (AILastDistance / 10)
-		end
-		if tryAngle > 90 then
-			tryAngle = math.random(85,88)
 		end
 	end
 	
-	player2AngleIn = tryAngle
-	player2PowerIn = tryPower
+	player2AngleIn = math.ceil(tryAngle)
+	player2PowerIn = math.ceil(tryPower)
 	
 	fireBannana(player2FireLocation.x, player2FireLocation.y, tryAngle, tryPower)
 	AILastAngle = tryAngle
@@ -1323,6 +1250,8 @@ function AIDoTurn()
 end
 
 function AIEvaluateShot(impactX, impactY, offscreenLeft, offscreenRight)
+	local gridX = math.ceil(impactX / 64)
+	
 	AILastDistance = math.sqrt(math.pow(impactX, 2) + math.pow(impactY, 2))
 	
 	if impactX < player1FireLocation.x then
@@ -1338,6 +1267,11 @@ function AIEvaluateShot(impactX, impactY, offscreenLeft, offscreenRight)
 			AILastOverUnder = "Under"
 		end
 	end
+	
+	if gridX == 10 then
+		AILastMoron = true
+	end
+	print("Last Distance: "..AILastDistance.." - Over/Under: "..AILastOverUnder)
 end
 
 function resetAI()
@@ -1399,6 +1333,8 @@ function gRound:draw()
 		else
 			love.graphics.draw(gorillaIdle, player1Location.x, player1Location.y)
 		end
+	else
+		love.graphics.draw(gorillaDead, player1Location.x, player1Location.y)
 	end
 	if player2 == true then
 		-- Player is alive, draw his gorilla
@@ -1415,6 +1351,8 @@ function gRound:draw()
 		else
 			love.graphics.draw(gorillaIdle, player2Location.x, player2Location.y)
 		end
+	else
+		love.graphics.draw(gorillaDead, player2Location.x, player2Location.y)
 	end
 	
 	-- Draw the bannana
@@ -1449,13 +1387,13 @@ function gRound:draw()
 	end
 	
 	-- Draw particle systems
-	for index, system in ipairs(fireSystems) do
+	for index, system in ipairs(SGParticles.fireSystems) do
 		love.graphics.draw(system, 0, 0)
 	end
-	for index, system in ipairs(sparkSystems) do
+	for index, system in ipairs(SGParticles.sparkSystems) do
 		love.graphics.draw(system, 0, 0)
 	end
-	for index, system in ipairs(debrisSystems) do
+	for index, system in ipairs(SGParticles.debrisSystems) do
 		love.graphics.draw(system, 0, 0)
 	end	
 	
@@ -1541,4 +1479,7 @@ function gRound:draw()
 	if player2Wins > 0 then
 		love.graphics.print("Victories: "..player2Wins, 635, 480)
 	end	
+	
+	-- Debug
+	love.graphics.print("GameMode: "..gameMode, 30, 460)
 end

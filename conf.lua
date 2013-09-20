@@ -4,5 +4,5 @@ function love.conf(t)
     t.url = "http://www.shenkoheavyindustries.com" 
 	t.screen.width = 768
 	t.screen.height = 512	
-	t.console = false
+	t.console = true
 end
