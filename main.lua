@@ -37,11 +37,7 @@ wind = 0					-- Wind to affect shots, randomly set per round
 sunWasHit = false			-- If true, sun displays o-face sprite
 
 -- AI vars
-AIDifficulty = "2"			-- Difficulty for AI. 1=easy 5=hard
 useAI = false				-- True if the round will use AI for player2
-AIThinkMin = 2				-- Min/max values for AI think time
-AIThinkMax = 6
-AIThinkElapsed = 0
 AILastAngle = 0				-- Last angle setting for AI shot
 AILastPower = 0				-- Last power settings for AI shot
 AILastMoron = false			-- True when our last shot hit building adjacent to us
@@ -90,6 +86,7 @@ bannana.velocity.y = 0
 bannana.rotation = 0
 bannanaRotationRate = 10		-- How fast bannana rotates per second, in degrees
 playDown = true					-- To ensure falling sound only plays once per shot
+bannanaOffscreen = false
 
 -- Temp explosion vars
 explosionRadius = 32			-- Radius of circle drawn for bannana/building explosion
@@ -131,6 +128,7 @@ function love.load()
 	gorillaDead = love.graphics.newImage("/images/gorilla_dead.tga")
 	titleScreen = love.graphics.newImage("/images/titlescreen.png")
 	menuScreen = love.graphics.newImage("/images/menuscreen.png")
+	AIThinking = love.graphics.newImage("/images/thinking.tga")
 	
 	-- Building images
 	buildingMid = love.graphics.newImage("/images/building_mid.tga")
@@ -315,31 +313,6 @@ function g1PMenu:update(dt)
 end
 
 function g1PMenu:keypressed(key, code)
-	if menuMode == 3 then
-		-- Enter AI difficulty
-		if key == "1" or key == "2" or key == "3" or key == "4" or key == "5" then
-			if string.len(AIDifficulty) < 1 then
-				-- Can fit more characters, append
-				if string.len(key) < 3 then
-					-- Play sound
-					love.audio.play(sKeypress)
-					AIDifficulty = AIDifficulty..key
-				end
-			end
-		elseif key == "return" then
-			-- Lock in difficulty, change game state
-			print("Rounds locked in, moving to round gamestate")
-			-- Play sound
-			love.audio.play(sConfirm)	
-			AIDifficulty = tonumber(AIDifficulty)
-			gameState.switch(gRound)
-		elseif key == "backspace" then
-			-- Delete last character
-			AIDifficulty = string.sub(AIDifficulty, 1, string.len(AIDifficulty) - 1)
-			-- Play sound
-			love.audio.play(sBackspace)			
-		end			
-	end
 	if menuMode == 2 then
 		-- Enter round amount
 		if key == "1" or key == "2" or key == "3" or key == "4" or key == "5" or key == "6" or key == "7" or key == "8" or key == "9" or key == "0" then
@@ -353,11 +326,11 @@ function g1PMenu:keypressed(key, code)
 			end
 		elseif key == "return" then
 			-- Lock in round amount, change game state
-			print("Rounds locked in, moving to AI difficulty")
+			print("Rounds locked in")
 			gameRounds = tonumber(gameRounds)
 			-- Play sound
 			love.audio.play(sConfirm)	
-			menuMode = 3
+			gameState.switch(gRound)
 		elseif key == "backspace" then
 			-- Delete last character
 			gameRounds = string.sub(gameRounds, 1, string.len(gameRounds) - 1)
@@ -439,14 +412,7 @@ function g1PMenu:draw()
 		love.graphics.printf("Vs.", 128, 280, 512, "left")
 		love.graphics.printf(player2Name, 128, 310, 512, "left")	
 		love.graphics.printf("Play how many rounds?", 128, 340, 512, "left")
-		love.graphics.printf("C:\\GORILLA\\> "..gameRounds..inputCursor, 128, 370, 512, "left")
-	elseif menuMode == 3 then
-		love.graphics.printf(player1Name, 128, 250, 512, "left")
-		love.graphics.printf("Vs.", 128, 280, 512, "left")
-		love.graphics.printf(player2Name, 128, 310, 512, "left")	
-		love.graphics.printf("Rounds: "..gameRounds, 128, 340, 512, "left")
-		love.graphics.printf("Enter AI difficulty (1 to 5)", 128, 370, 512, "left")
-		love.graphics.printf("C:\\GORILLA\\> "..AIDifficulty..inputCursor, 128, 400, 512, "left")	
+		love.graphics.printf("C:\\GORILLA\\> "..gameRounds..inputCursor, 128, 370, 512, "left")	
 	end
 end
 
@@ -781,6 +747,7 @@ function gRound:update(dt)
 				end
 			end
 			-- End turn
+			bannanaOffscreen = true
 			print("Bannana offscreen, ending turn")
 			swapTurn()
 		end
@@ -798,6 +765,8 @@ function gRound:update(dt)
 				bannana.impactLocation.x = player2Location.x + 32
 				bannana.impactLocation.y = player2Location.y + 32
 			end
+			-- Spawn explosion PS
+			SGParticles.newGorillaExplosion(bannana.impactLocation.x, bannana.impactLocation.y)
 			-- Stop bannana flight sounds
 			love.audio.stop(sBannanaUp)
 			love.audio.stop(sBannanaDown)
@@ -830,6 +799,7 @@ function gRound:update(dt)
 			love.audio.play(sBannanaExplode)
 			resetExplosion()
 			print("Building hit, ending turn")
+			bannanaOffscreen = false
 			swapTurn()
 			sunWasHit = false
 		end
@@ -1110,7 +1080,7 @@ function swapTurn()
 		player2AngleIn = ""
 		player2PowerIn = ""
 		if useAI == true then
-			timer.add(3, function() AIDoTurn() end)
+			timer.add(1, function() AIDoTurn() end)
 		else
 			timer.add(1, function() gameMode = 1 end)
 		end
@@ -1149,7 +1119,6 @@ end
 
 function AIDoTurn()
 	gameMode = -1
-	
 	-- Main AI start point
 	local tryAngle = 0
 	local tryPower = 0
@@ -1201,22 +1170,22 @@ function AIDoTurn()
 		if AILastDistance < 40 then
 			if AILastOverUnder == "Over" then
 				tryAngle = AILastAngle
-				tryPower = AILastPower + math.random(1,5)
+				tryPower = AILastPower - math.random(1,5)
 			elseif AILastOverUnder == "Under" then
 				tryAngle = AILastAngle
-				tryPower = AILastPower - math.random(1,5)
+				tryPower = AILastPower + math.random(1,5)
 			end
 		else
 			if AILastOverUnder == "Over" then
 				tryPower = AILastPower - (AILastDistance / 15)
-				tryAngle = AILastAngle
-				if tryPower < 0 then
+				tryAngle = AILastAngle + math.random(1,7)
+				if tryPower < 20 then
 					tryPower = 40
 					tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
 				end
 			elseif AILastOverUnder == "Under" then
 				tryPower = AILastPower + (AILastDistance / 15)
-				tryAngle = AILastAngle
+				tryAngle = AILastAngle + math.random(1,7)
 				if AILastMoron == true then
 					AILastMoron = false
 					AIMinAngle = AIMinAngle + 10
@@ -1227,7 +1196,7 @@ function AIDoTurn()
 				end
 			elseif AILastOverUnder == "OverOS" then
 				tryPower = AILastPower - math.random(10, 20)
-				tryAngle = AILastAngle + math.random(5, 15)
+				tryAngle = AILastAngle + math.random(5, 10)
 				if tryPower < 10 then
 					tryPower = math.random(20, 30)
 					tryAngle = math.random(AIMinAngle, AIMinAngle + 10)
@@ -1244,7 +1213,7 @@ function AIDoTurn()
 	player2AngleIn = math.ceil(tryAngle)
 	player2PowerIn = math.ceil(tryPower)
 	
-	fireBannana(player2FireLocation.x, player2FireLocation.y, tryAngle, tryPower)
+	timer.add(3, function() fireBannana(player2FireLocation.x, player2FireLocation.y, tryAngle, tryPower) end)
 	AILastAngle = tryAngle
 	AILastPower = tryPower
 end
@@ -1275,7 +1244,6 @@ function AIEvaluateShot(impactX, impactY, offscreenLeft, offscreenRight)
 end
 
 function resetAI()
-	AIThinkElapsed = 0
 	AILastAngle = 0	
 	AILastPower = 0
 	AIMinAngle = 0
@@ -1361,21 +1329,19 @@ function gRound:draw()
 	end
 	
 	-- Draw temp explosion
-	if gameMode == 4 and player1 == true and player2 == true then
+	if gameMode == 4 and player1 == true and player2 == true and bannanaOffscreen == false then
 		-- Draw bannana explosion with building
 		if explosionRadius > 0 then
 			love.graphics.setColorMode("replace")
 			love.graphics.setColor(255, 0, 0, 255)
 			love.graphics.circle("fill", bannana.impactLocation.x, bannana.impactLocation.y, explosionRadius, 16)
 			explosionRadius = explosionRadius - explosionFade
-		else
-			timer.add(1, function() gameMode = 1 end)
 		end
 	elseif gameMode == 4 and (player1 == false or player2 == false) then
 		-- Draw gorilla explosion
 		if gorillaExplosionRadius > 0 then
 			love.graphics.setColorMode("replace")
-			love.graphics.setColor(255, 0, 0, 255)
+			love.graphics.setColor(200, 0, 0, 255)
 			love.graphics.circle("fill", bannana.impactLocation.x, bannana.impactLocation.y, gorillaExplosionRadius, 16)
 			gorillaExplosionRadius = gorillaExplosionRadius - gorillaExplosionFade	
 		else
@@ -1396,6 +1362,20 @@ function gRound:draw()
 	for index, system in ipairs(SGParticles.debrisSystems) do
 		love.graphics.draw(system, 0, 0)
 	end	
+	for index, system in ipairs(SGParticles.fireSystems2) do
+		love.graphics.draw(system, 0, 0)
+	end
+	for index, system in ipairs(SGParticles.bloodExplosionSystems) do
+		love.graphics.draw(system, 0, 0)
+	end
+	for index, system in ipairs(SGParticles.bloodSystems) do
+		love.graphics.draw(system, 0, 0)
+	end	
+	
+	-- Draw AI thinking bubble
+	if gameMode == -1 then
+		love.graphics.draw(AIThinking, player2Location.x, player2Location.y - 64)
+	end
 	
 	-- Draw player names
 	love.graphics.setFont(gorillaFont)
@@ -1477,9 +1457,6 @@ function gRound:draw()
 		love.graphics.print("Victories: "..player1Wins, 30, 480)
 	end
 	if player2Wins > 0 then
-		love.graphics.print("Victories: "..player2Wins, 635, 480)
+		love.graphics.print("Victories: "..player2Wins, 630, 480)
 	end	
-	
-	-- Debug
-	love.graphics.print("GameMode: "..gameMode, 30, 460)
 end
